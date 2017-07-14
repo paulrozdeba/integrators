@@ -1,0 +1,179 @@
+"""
+A collection of stochastic integration methods.
+"""
+
+import numpy as np
+
+def euler_maruyama(f, g, x, t1, t2, pf, pg, sidx, fstim=None):
+    """
+    Stochastic Euler-Maruyama method, strong order 1/2.
+    """
+    dt = t2 - t1
+    D = len(x)
+    Nrand = len(sidx)
+
+    if fstim is None:
+        pf_in_1 = pf
+    else:
+        try:
+            s1 = fstim(t1)
+        except TypeError:
+            s1 = fstim
+        pf_in_1 = (pf, s1)
+
+    xi = np.random.randn(Nrand)
+    dx = f(t1, x, pf_in_1) * dt
+    dx[sidx] += g(t1, x, pg) * np.sqrt(dt)*xi
+
+    return dx
+
+def euler_maruyama_xt(f, g, x, t1, t2, pf, pg, sidx, fstim=None):
+    """
+    Stochastic Euler-Maruyama method, strong order 1/2.
+    For f and g that take arguments in the order x,t rather than t,x.
+    """
+    dt = t2 - t1
+    D = len(x)
+    Nrand = len(sidx)
+
+    if fstim is None:
+        pf_in_1 = pf
+    else:
+        try:
+            s1 = fstim(t1)
+        except TypeError:
+            s1 = fstim
+        pf_in_1 = (pf, s1)
+
+    xi = np.sqrt(dt) * np.random.randn(Nrand)
+    dx = f(x, t1, pf_in_1) * dt
+    dx[sidx] += g(x, t1, pg) * xi
+
+    return dx
+
+def ItoTaylor_1p5(f, g, x, t1, t2, pf, pg, sidx, fstim=None):
+    """
+    Stochastic Ito-Taylor expansion, strong order 1.5.
+    Uses an approximation to the Stratonovich form of the multiple noise
+    integrals from Kloeden and Platen.
+    """
+    dt = t2 - t1
+    D = len(x)
+    Nrand = len(sidx)
+
+    if fstim is None:
+        pf_in_1 = pf
+    else:
+        try:
+            s1 = fstim(t1)
+        except TypeError:
+            s1 = fstim
+        pf_in_1 = (pf, s1)
+
+    f1 = f(t1, x, pf_in_1)
+    g1 = g(t1, x, pg)
+
+    gamma_plus = x + f1*dt + g1*np.sqrt(dt)
+    gamma_minus = x + f1*dt - g1*np.sqrt(dt)
+
+    fGam_p = f(t1, gamma_plus, pf_in_1)
+    fGam_m = f(t1, gamma_minus, pf_in_1)
+    gGam_p = g(t1, gamma_plus, pg)
+    gGam_m = g(t1, gamma_minus, pg)
+    phi_plus = gamma_plus + gGam_p*np.sqrt(dt)
+    phi_minus = gamma_plus - gGam_p*np.sqrt(dt)
+    gPhi_p = g(t1, phi_plus, pg)
+    gPhi_m = g(t1, phi_minus, pg)
+
+    Winc = np.sqrt(dt)*np.random.randn(D)
+    Zinc = dt*Winc + dt**(1.5)/np.sqrt(3.0)*np.random.randn(D)
+
+    dx = g1*Winc + (fGam_p - fGam_m)*Zinc/(2.0*np.sqrt(dt)) \
+        + dt*(fGam_p + 2.0*f1 + fGam_m)/4.0 \
+        + (gGam_p - gGam_m) * (Winc**2 - dt) / (4.0*np.sqrt(dt)) \
+        + (gGam_p - 2.0*g1 + gGam_m) * (Winc*dt - Zinc)/(2.0*dt) \
+        + (gPhi_p - gPhi_m - gGam_p + gGam_m) * (Winc**3/3.0 - dt*Winc) / (4.0*dt)
+
+    return dx
+    
+def milRK_1p5(f, x, t1, t2, pf, g, sidx, pg=None, dgdt=None, fstim=None):
+    """
+    A strong order 1.5 method outlined in Milstein & Tretyakov,
+    "Stochastic Numerics for Mathematical Physics."
+    Assumes the noise is *additive*.
+    This method requires the time derivative of g if it is not constant.
+    It is assumed that the noise is diagonal in the model components, and that
+    there is only one process per component.
+    """
+    dt = t2 - t1
+    D = len(x)
+    dx = np.zeros(D)
+
+    Nrand = len(sidx)
+    q1 = np.sqrt(dt) * np.random.randn(Nrand)
+    q2 = np.sqrt(dt) * np.random.randn(Nrand)
+
+    if fstim is None:
+        pf_in_1 = pf
+        pf_in_2 = pf
+    else:
+        try:
+            s1, s2 = (fstim(t1), fstim(t2))
+        except TypeError:
+            s1, s2 = fstim
+        pf_in_1 = (pf, s1)
+        pf_in_2 = (pf, s2)
+
+    termP = np.zeros(D)
+    termM = np.zeros(D)
+    termP[sidx] += g(t1, pg) * ((0.5 + 1.0/np.sqrt(6.0))*q1 + q2/np.sqrt(12.0))
+    termM[sidx] += g(t1, pg) * ((0.5 - 1.0/np.sqrt(6.0))*q1 + q2/np.sqrt(12.0))
+    dx[sidx] += g(t1, pg) * q1
+    dx += dt/2.0 * f(t1, x + termP, pf_in_1)
+    dx += dt/2.0 * f(t2, x + dt*f(t1, x, pf_in_1) + termM, pf_in_2)
+    if dgdt is not None:
+        dx[sidx] += dgdt(t1, pg) * dt * (q1/2.0 - q2/np.sqrt(12.0))
+
+    return dx
+
+def milRK2_mult(f, g, x_n, Z_n, t_n, t_np1, sidx, pf, pg, sigma_Z, fstim=None):
+    """
+    An RK method of order (2, 1.5) outlined in Milstein & Tretyakov,
+    "Stochastic Numerics for Mathematical Physics."
+    This is meant for equations with multiplicative noise of the form
+    dX = f(X) dt + g(X) Z dt
+    dZ = b dW
+    """
+    dt = t_np1 - t_n
+    D = len(x_n)
+    dx = np.zeros(D)
+    Nrand = len(sidx)
+
+    if fstim is None:
+        pf_stim = pf
+    else:
+        try:
+            s_n = fstim(t_n)
+        except TypeError:
+            s_n = fstim
+        pf_stim = (pf, s_n)
+
+    xi_n = np.random.randn(Nrand)
+    eta_n = np.random.randn(Nrand)
+    Zbar_n = Z_n + sigma_Z*xi_n*np.sqrt(dt)
+
+    # here, f and g are pre-evaluated for speed
+    f_n = f(t_n, x_n, pf_stim)
+    xbar_n = x_n + dt * f_n
+    g_n = g(t_n, x_n, pg)
+    xbar_n[sidx] += dt * g_n*Z_n
+    gbar_n = g(t_n, xbar_n, pg)
+    fbar_n = f(t_n, xbar_n, pf_stim)
+
+    dx += dt/2.0 * (f_n + fbar_n)
+    dx[sidx] += dt/2.0 * (g_n*Z_n + gbar_n*Zbar_n) + \
+        g_n * sigma_Z * dt**1.5 * eta_n / np.sqrt(12.0)
+
+    dZ = sigma_Z*xi_n*np.sqrt(dt) + dt/2.0*(Z_n + Zbar_n)
+
+    return dx, dZ
